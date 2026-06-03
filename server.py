@@ -31,8 +31,11 @@ manually. FastMCP is the right choice for new servers.
 
 from __future__ import annotations
 
+import datetime
 import logging
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from mcp.server.fastmcp import FastMCP
 
@@ -79,6 +82,72 @@ def _deps() -> tuple[MLBBClient, HeroRoster]:
 def _equipment_lookup() -> EquipmentLookup:
     assert _equipment is not None, "Server not initialized"
     return _equipment
+
+
+# ---------------------------------------------------------------------------
+# Tool: list_heroes
+# ---------------------------------------------------------------------------
+
+class _HeroEntry(BaseModel):
+    id: int
+    name: str
+
+
+class _HeroListResult(BaseModel):
+    heroes: list[_HeroEntry]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool
+
+
+@app.tool()
+async def list_heroes(
+    search: str = "",
+    page: int = 1,
+    page_size: int = 20,
+) -> str:
+    """
+    List all MLBB heroes, optionally filtered by a name search.
+
+    Primarily useful for disambiguation — when a hero name is ambiguous or
+    partially remembered. Also useful for browsing the full roster.
+
+    The hero list is cached for 24 hours (it only changes on patch day).
+    Use the `resolve` tools (get_hero_winrate etc.) once you know the exact
+    hero name or ID.
+
+    Parameters
+    ----------
+    search:
+        Optional substring to filter by (case-insensitive). Leave empty to
+        list all heroes. Example: "lance" returns Lancelot.
+    page:
+        Page number, starting at 1.
+    page_size:
+        Heroes per page. Between 1 and 132. Defaults to 20.
+    """
+    _, roster = _deps()
+    all_h = await roster.all_heroes()  # sorted by ID, loaded from cache
+
+    if search:
+        q = search.strip().lower()
+        all_h = [h for h in all_h if q in h.name.lower()]
+
+    page_size = max(1, min(page_size, 132))
+    page = max(1, page)
+    total = len(all_h)
+    start = (page - 1) * page_size
+    page_h = all_h[start:start + page_size]
+
+    result = _HeroListResult(
+        heroes=[_HeroEntry(id=h.id, name=h.name) for h in page_h],
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=(start + page_size) < total,
+    )
+    return result.model_dump_json(indent=2)
 
 
 # ---------------------------------------------------------------------------
