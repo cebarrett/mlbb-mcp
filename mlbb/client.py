@@ -126,7 +126,7 @@ class MLBBClient:
             base_url=base_url.rstrip("/"),
             timeout=timeout,
             headers={"User-Agent": "mlbb-mcp/0.1"},
-            follow_redirects=True,
+            follow_redirects=False,
         )
 
     # ------------------------------------------------------------------

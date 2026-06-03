@@ -77,16 +77,20 @@ class Cache:
 
     def make_key(self, path: str, params: dict[str, Any] | None = None) -> str:
         """
-        Build a deterministic string key from an API path + query params.
-        Params are sorted so the key is stable regardless of dict order.
+        Build a deterministic cache key from an API path + query params.
+
+        Uses JSON serialisation so the key is unambiguous regardless of what
+        characters appear in keys or values (avoids separator-collision bugs
+        that arise with pipe-delimited strings).
 
         >>> cache.make_key("heroes/rank", {"rank": "mythic", "days": 7})
-        'heroes/rank|days=7|rank=mythic'
+        '{"path": "heroes/rank", "params": {"days": 7, "rank": "mythic"}}'
         """
-        if not params:
-            return path
-        parts = "|".join(f"{k}={v}" for k, v in sorted(params.items()))
-        return f"{path}|{parts}"
+        import json
+        return json.dumps(
+            {"path": path, "params": dict(sorted((params or {}).items()))},
+            separators=(",", ":"),
+        )
 
     # ------------------------------------------------------------------
     # Read / write
