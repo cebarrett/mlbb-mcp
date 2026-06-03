@@ -1,6 +1,6 @@
 # mlbb-mcp
 
-An MCP server for Mobile Legends: Bang Bang hero data, backed by [ridwaanhall/api-mobilelegends](https://github.com/ridwaanhall/api-mobilelegends). Built as a learning project covering MCP server design, LLM tool design, grounded generation with citations, and resilient API caching.
+An MCP server for Mobile Legends: Bang Bang hero data, backed by [ridwaanhall/api-mobilelegends](https://github.com/ridwaanhall/api-mobilelegends). Built as a learning project for personal use, covering MCP server design, LLM tool design, grounded generation with citations, resilient API caching, and LLM-as-judge evals.
 
 100% written by Claude; 100% reviewed by me.
 
@@ -33,11 +33,12 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Copy `.env.example` to `.env` and fill in your key (only needed for evals):
+Copy `.env.example` to `.env` and fill in your keys (only needed for evals, not for the MCP server or CLI):
 
 ```bash
 cp .env.example .env
-# edit .env: set ANTHROPIC_API_KEY=...
+# ANTHROPIC_API_KEY — required for both eval scripts
+# OPENAI_API_KEY    — required for evals/comprehensive_evals.py (GPT judge) only
 ```
 
 ---
@@ -89,37 +90,33 @@ The stale-cache tests cover every failure mode — network error, timeout, HTTP 
 
 ## Evals
 
-LLM behaviour evals (requires `ANTHROPIC_API_KEY` in `.env`, makes real API calls):
+LLM behavior evals — separate from unit tests. They make real API calls and cost money, so run them intentionally rather than in CI. Both require `ANTHROPIC_API_KEY` (and `OPENAI_API_KEY` for the comprehensive suite) in `.env`.
+
+### `evals/run_evals.py` — focused behavioural checks
+
+Two targeted evals that pre-inject tool results and grade the final response:
 
 ```bash
-python evals/run_evals.py              # both evals
+python evals/run_evals.py              # both
 python evals/run_evals.py citation     # citation correctness only
 python evals/run_evals.py fabrication  # fabrication refusal only
 ```
 
-Two evals:
-- **citation_correctness** — does Claude include rank tier, time window, percentage, and source when answering a stats question?
-- **fabrication_refusal** — does Claude refuse to invent stats when the tool returns an error?
+- **citation_correctness** — injects a real live tool result; checks Claude's response includes rank tier, time window, percentage, and source.
+- **fabrication_refusal** — injects a `ToolError`; checks Claude refuses to invent stats rather than making something up.
 
----
+### `evals/comprehensive_evals.py` — full tool-selection + quality suite
 
-## Project layout
+33 questions across all 8 tools. Claude actually calls tools with real parameters; GPT grades each trace on tool selection, citation quality, and fabrication.
 
+```bash
+python evals/comprehensive_evals.py              # all 33, Haiku answerer (~$0.10, ~2 min)
+python evals/comprehensive_evals.py --sonnet     # all 33, Sonnet answerer (~$1–2, ~5 min)
+python evals/comprehensive_evals.py 5            # first 5 only (smoke test)
+python evals/comprehensive_evals.py 5 build      # first 5, filter by category
 ```
-mlbb/
-  client.py        # async httpx client with cache + stale-serve
-  cache.py         # disk TTL cache (diskcache), freshness tracking
-  heroes.py        # hero roster, name/ID resolution
-  models.py        # Citation, ToolError, RankTier, HeroRef
-  endpoints/
-    rank.py        # /api/heroes/rank → get_hero_winrate, get_top_heroes
-    hero.py        # /api/heroes/{id}/* → counters, synergies, trends, profile
-    academy.py     # /api/academy/heroes/{id}/builds → get_hero_build
-server.py          # FastMCP server, tool definitions
-cli.py             # dev CLI
-tests/             # pytest stale-cache integration tests
-evals/             # LLM behaviour evals (needs Anthropic API key)
-```
+
+Use Haiku by default during development; switch to `--sonnet` when you want to measure Sonnet's behaviour specifically. The judge is always `gpt-4o-mini` — the grading task is mechanical enough that a frontier judge model isn't needed.
 
 ---
 
