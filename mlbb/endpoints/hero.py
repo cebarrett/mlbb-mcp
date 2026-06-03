@@ -364,9 +364,9 @@ async def fetch_hero_profile(
     raw_skills = skill_lists[0]["skilllist"] if skill_lists else []
     skills = [
         SkillInfo(
-            name=s["skillname"],
-            description=_strip_html(s.get("skilldesc", "")),
-            cooldown_cost=s.get("skillcd&cost", ""),
+            name=s["skillname"][:100],
+            description=_strip_html(s.get("skilldesc", ""))[:500],
+            cooldown_cost=s.get("skillcd&cost", "")[:80],
         )
         for s in raw_skills
     ]
@@ -378,7 +378,7 @@ async def fetch_hero_profile(
         lane=lane,
         specialties=specialties,
         difficulty=_difficulty_label(data.get("difficulty", "0")),
-        story=data.get("story", ""),
+        story=data.get("story", "")[:300],
         skills=skills,
         citation=citation.model_copy(update={"time_window_days": None, "rank_tier": None}),
     )
