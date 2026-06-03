@@ -37,8 +37,10 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from mlbb import HeroRoster, MLBBClient, RankTier, ToolError
+from mlbb.endpoints.academy import EquipmentLookup, VALID_LANES, fetch_hero_build
 from mlbb.endpoints.hero import (
     fetch_hero_counters,
+    fetch_hero_profile,
     fetch_hero_synergies,
     fetch_hero_trends,
 )
@@ -66,11 +68,17 @@ app = FastMCP(
 # calls. Stored at module level so tool functions can reach them.
 _client: MLBBClient | None = None
 _roster: HeroRoster | None = None
+_equipment: EquipmentLookup | None = None
 
 
 def _deps() -> tuple[MLBBClient, HeroRoster]:
     assert _client is not None and _roster is not None, "Server not initialized"
     return _client, _roster
+
+
+def _equipment_lookup() -> EquipmentLookup:
+    assert _equipment is not None, "Server not initialized"
+    return _equipment
 
 
 # ---------------------------------------------------------------------------
@@ -296,18 +304,78 @@ async def get_hero_trends(
 
 
 # ---------------------------------------------------------------------------
+# Tool: get_hero_build
+# ---------------------------------------------------------------------------
+
+@app.tool()
+async def get_hero_build(
+    hero: str,
+    lane: str = "",
+) -> str:
+    """
+    Get the recommended builds for a hero, including items, spell, and emblem.
+
+    Returns the top 3 builds sorted by popularity (pick rate), each with its
+    win rate. If lane is not specified, it is inferred from the hero's primary
+    lane — the result will indicate when this happens.
+
+    Parameters
+    ----------
+    hero:
+        Hero name (full or partial) or numeric ID.
+    lane:
+        Lane to get builds for. One of: exp, mid, roam, jungle, gold.
+        Leave empty to infer from the hero's primary lane.
+    """
+    client, roster = _deps()
+    result = await fetch_hero_build(
+        client, roster, _equipment_lookup(),
+        hero=hero,
+        lane=lane.strip().lower() or None,
+    )
+    return result.model_dump_json(indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_hero_profile
+# ---------------------------------------------------------------------------
+
+@app.tool()
+async def get_hero_profile(
+    hero: str,
+) -> str:
+    """
+    Get static profile information for a hero: role, lane, specialties,
+    difficulty, lore, and skill descriptions.
+
+    Useful for questions like "what does Lancelot do?", "what role is Fanny?",
+    or "describe Lancelot's skills". This data is cached for 24 hours since
+    it only changes on patch day.
+
+    Parameters
+    ----------
+    hero:
+        Hero name (full or partial) or numeric ID.
+    """
+    client, roster = _deps()
+    result = await fetch_hero_profile(client, roster, hero=hero)
+    return result.model_dump_json(indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 async def _init() -> None:
-    """Initialize shared client and roster before serving requests."""
-    global _client, _roster
+    """Initialize shared client, roster, and equipment lookup."""
+    global _client, _roster, _equipment
     # Anchor the cache directory to this file's location, not the working
     # directory. Claude Desktop spawns the server from an unrelated cwd
     # (often / or the home dir), so a relative ".cache" path won't resolve.
     cache_dir = str(Path(__file__).parent / ".cache")
     _client = MLBBClient(cache_dir=cache_dir)
     _roster = HeroRoster(_client)
+    _equipment = EquipmentLookup(_client)
 
 
 if __name__ == "__main__":

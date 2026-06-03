@@ -3,6 +3,7 @@ Endpoint wrappers for hero-specific dynamic stats.
 
   /api/heroes/{id}/counters  ->  fetch_hero_counters, fetch_hero_synergies
   /api/heroes/{id}/trends    ->  fetch_hero_trends
+  /api/heroes/{id}           ->  fetch_hero_profile
 
 Counter vs synergy semantics
 -----------------------------
@@ -25,7 +26,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from mlbb.cache import FRESH_TTL_SHORT
+import re
+
+from mlbb.cache import FRESH_TTL_LONG, FRESH_TTL_SHORT
 from mlbb.client import MLBBError
 from mlbb.models import Citation, RankTier, TimeWindow, ToolError
 
@@ -293,3 +296,107 @@ def _augment(citation: Citation, days: TimeWindow, rank: RankTier) -> Citation:
         "time_window_days": int(days),
         "rank_tier": rank.value,
     })
+
+
+# ---------------------------------------------------------------------------
+# Hero profile — output models + fetch function
+# ---------------------------------------------------------------------------
+
+
+class SkillInfo(BaseModel):
+    name: str
+    description: str    # HTML tags stripped
+    cooldown_cost: str  # e.g. "CD: 14   Mana Cost: 40", empty string for passives
+
+
+class HeroProfileResult(BaseModel):
+    """Static hero data: role, lane, skills, lore. Long cache TTL (24h)."""
+
+    hero: str
+    hero_id: int
+    role: list[str]         # e.g. ["Assassin"]
+    lane: list[str]         # e.g. ["Jungle"]
+    specialties: list[str]  # e.g. ["Chase", "Burst"]
+    difficulty: str         # "Low" | "Medium" | "High"
+    story: str
+    skills: list[SkillInfo]
+    citation: Citation
+
+
+async def fetch_hero_profile(
+    client: "MLBBClient",
+    roster: "HeroRoster",
+    hero: str | int,
+) -> HeroProfileResult | ToolError:
+    """
+    Return static profile data for a hero: role, lane, skills, lore.
+
+    Uses a 24h cache TTL — hero stats and skills only change on patch day.
+    """
+    hero_ref, error = await _resolve(roster, hero)
+    if error:
+        return error
+
+    try:
+        raw, citation = await client.fetch(
+            f"api/heroes/{hero_ref.id}",
+            fresh_ttl=FRESH_TTL_LONG,
+        )
+    except MLBBError as e:
+        return ToolError(error="upstream_unavailable", message=str(e))
+
+    records = raw["data"]["records"]
+    if not records:
+        return ToolError(
+            error="no_data",
+            message=f"No profile data found for {hero_ref.name}.",
+        )
+
+    data = records[0]["data"]["hero"]["data"]
+
+    # Role and lane: filter out empty strings the API sometimes includes
+    role = [r for r in data.get("sortlabel", []) if r]
+    lane = [ln for ln in data.get("roadsortlabel", []) if ln]
+    specialties = [s for s in data.get("speciality", []) if s]
+
+    # Skills
+    skill_lists = data.get("heroskilllist", [])
+    raw_skills = skill_lists[0]["skilllist"] if skill_lists else []
+    skills = [
+        SkillInfo(
+            name=s["skillname"],
+            description=_strip_html(s.get("skilldesc", "")),
+            cooldown_cost=s.get("skillcd&cost", ""),
+        )
+        for s in raw_skills
+    ]
+
+    return HeroProfileResult(
+        hero=hero_ref.name,
+        hero_id=hero_ref.id,
+        role=role,
+        lane=lane,
+        specialties=specialties,
+        difficulty=_difficulty_label(data.get("difficulty", "0")),
+        story=data.get("story", ""),
+        skills=skills,
+        citation=citation.model_copy(update={"time_window_days": None, "rank_tier": None}),
+    )
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML font/color tags from skill descriptions."""
+    return re.sub(r"<[^>]+>", "", text).strip()
+
+
+def _difficulty_label(raw: str) -> str:
+    """Map 0-100 difficulty score to a human label."""
+    try:
+        score = int(raw)
+    except (ValueError, TypeError):
+        return "Unknown"
+    if score <= 30:
+        return "Low"
+    if score <= 60:
+        return "Medium"
+    return "High"
