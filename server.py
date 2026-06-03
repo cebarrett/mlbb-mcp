@@ -32,10 +32,16 @@ manually. FastMCP is the right choice for new servers.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from mlbb import HeroRoster, MLBBClient, RankTier, ToolError
+from mlbb.endpoints.hero import (
+    fetch_hero_counters,
+    fetch_hero_synergies,
+    fetch_hero_trends,
+)
 from mlbb.endpoints.rank import fetch_hero_rank_stats, fetch_top_heroes
 
 logging.basicConfig(level=logging.WARNING)
@@ -68,6 +74,29 @@ def _deps() -> tuple[MLBBClient, HeroRoster]:
 
 
 # ---------------------------------------------------------------------------
+# Shared validation
+# ---------------------------------------------------------------------------
+
+_VALID_DAYS = (1, 3, 7, 15, 30)
+_VALID_RANKS = ("all", "epic", "legend", "mythic", "honor", "glory")
+
+
+def _validate_days_rank(days: int, rank: str) -> str | None:
+    """Return a JSON ToolError string if params are invalid, else None."""
+    if days not in _VALID_DAYS:
+        return ToolError(
+            error="invalid_parameter",
+            message=f"days must be one of {list(_VALID_DAYS)} — got {days}",
+        ).model_dump_json(indent=2)
+    if rank not in _VALID_RANKS:
+        return ToolError(
+            error="invalid_parameter",
+            message=f"rank must be one of: {', '.join(_VALID_RANKS)} — got {rank!r}",
+        ).model_dump_json(indent=2)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Tool: get_hero_winrate
 # ---------------------------------------------------------------------------
 
@@ -97,17 +126,9 @@ async def get_hero_winrate(
         Rank tier to filter by. One of: all, epic, legend, mythic, honor, glory.
         Defaults to "mythic" — the tier with the most competitive play.
     """
-    if days not in (1, 3, 7, 15, 30):
-        return ToolError(
-            error="invalid_parameter",
-            message=f"days must be one of 1, 3, 7, 15, 30 — got {days}",
-        ).model_dump_json(indent=2)
-    if rank not in ("all", "epic", "legend", "mythic", "honor", "glory"):
-        return ToolError(
-            error="invalid_parameter",
-            message=f"rank must be one of: all, epic, legend, mythic, honor, glory — got {rank!r}",
-        ).model_dump_json(indent=2)
-
+    err = _validate_days_rank(days, rank)
+    if err:
+        return err
     client, roster = _deps()
     result = await fetch_hero_rank_stats(
         client, roster,
@@ -147,16 +168,9 @@ async def get_top_heroes(
     limit:
         Number of heroes to return. Between 1 and 30. Defaults to 10.
     """
-    if days not in (1, 3, 7, 15, 30):
-        return ToolError(
-            error="invalid_parameter",
-            message=f"days must be one of 1, 3, 7, 15, 30 — got {days}",
-        ).model_dump_json(indent=2)
-    if rank not in ("all", "epic", "legend", "mythic", "honor", "glory"):
-        return ToolError(
-            error="invalid_parameter",
-            message=f"rank must be one of: all, epic, legend, mythic, honor, glory — got {rank!r}",
-        ).model_dump_json(indent=2)
+    err = _validate_days_rank(days, rank)
+    if err:
+        return err
     if sort_by not in ("win_rate", "pick_rate", "ban_rate"):
         return ToolError(
             error="invalid_parameter",
@@ -175,13 +189,124 @@ async def get_top_heroes(
 
 
 # ---------------------------------------------------------------------------
+# Tool: get_hero_counters
+# ---------------------------------------------------------------------------
+
+@app.tool()
+async def get_hero_counters(
+    hero: str,
+    days: int = 7,
+    rank: str = "mythic",
+) -> str:
+    """
+    Get the heroes that counter a given hero — i.e. reduce its win rate most
+    when on the enemy team.
+
+    Returns up to 5 heroes with their win rate delta against the queried hero
+    and their own overall win rate. Useful for draft decisions.
+
+    Parameters
+    ----------
+    hero:
+        Hero name (full or partial) or numeric ID.
+    days:
+        Time window in days. One of: 1, 3, 7, 15, 30.
+    rank:
+        Rank tier. One of: all, epic, legend, mythic, honor, glory.
+    """
+    err = _validate_days_rank(days, rank)
+    if err:
+        return err
+    client, roster = _deps()
+    result = await fetch_hero_counters(
+        client, roster, hero=hero, days=days, rank=RankTier(rank),  # type: ignore[arg-type]
+    )
+    return result.model_dump_json(indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_hero_synergies
+# ---------------------------------------------------------------------------
+
+@app.tool()
+async def get_hero_synergies(
+    hero: str,
+    days: int = 7,
+    rank: str = "mythic",
+) -> str:
+    """
+    Get the heroes that synergize best with a given hero — i.e. boost its win
+    rate most when on the same team.
+
+    Returns up to 5 heroes with their win rate delta alongside the queried
+    hero. Useful for "who should I pair with X?" questions.
+
+    Parameters
+    ----------
+    hero:
+        Hero name (full or partial) or numeric ID.
+    days:
+        Time window in days. One of: 1, 3, 7, 15, 30.
+    rank:
+        Rank tier. One of: all, epic, legend, mythic, honor, glory.
+    """
+    err = _validate_days_rank(days, rank)
+    if err:
+        return err
+    client, roster = _deps()
+    result = await fetch_hero_synergies(
+        client, roster, hero=hero, days=days, rank=RankTier(rank),  # type: ignore[arg-type]
+    )
+    return result.model_dump_json(indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tool: get_hero_trends
+# ---------------------------------------------------------------------------
+
+@app.tool()
+async def get_hero_trends(
+    hero: str,
+    days: int = 7,
+    rank: str = "mythic",
+) -> str:
+    """
+    Get the day-by-day win rate, pick rate, and ban rate trend for a hero.
+
+    Useful for "is this hero trending up or down?" or "has Fanny's win rate
+    changed this week?" questions. Returns one entry per day, newest first.
+
+    Parameters
+    ----------
+    hero:
+        Hero name (full or partial) or numeric ID.
+    days:
+        Time window in days. One of: 1, 3, 7, 15, 30.
+    rank:
+        Rank tier. One of: all, epic, legend, mythic, honor, glory.
+    """
+    err = _validate_days_rank(days, rank)
+    if err:
+        return err
+    client, roster = _deps()
+    result = await fetch_hero_trends(
+        client, roster, hero=hero, days=days, rank=RankTier(rank),  # type: ignore[arg-type]
+    )
+    return result.model_dump_json(indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 async def _init() -> None:
     """Initialize shared client and roster before serving requests."""
     global _client, _roster
-    _client = MLBBClient()
+    # Anchor the cache directory to this file's location, not the working
+    # directory. Claude Desktop spawns the server from an unrelated cwd
+    # (often / or the home dir), so a relative ".cache" path won't resolve.
+    cache_dir = str(Path(__file__).parent / ".cache")
+    _client = MLBBClient(cache_dir=cache_dir)
     _roster = HeroRoster(_client)
 
 
